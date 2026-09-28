@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .fingerprints import client_device_type, client_display_name
 from .models import AuditResult, Finding, SEVERITY_ORDER
+from .presentation import CLIENT_SEVERITIES, CLIENT_TITLES
 from .service_catalog import COMMON_PORTS
 
 PROFILE_TITLES = {
@@ -15,20 +16,6 @@ PROFILE_TITLES = {
     "analyst": "Relatório Operacional de Auditoria",
     "client": "Resumo Executivo de Segurança",
 }
-
-CLIENT_TITLES = {
-    "Protocolo Telnet confirmado e acessível": "Acesso remoto usa Telnet, sem criptografia",
-    "Servidor SMBv1 aceitou negociação": "Compartilhamento aceita um protocolo antigo",
-    "Firewall do Windows desabilitado em perfis": "Firewall do Windows está desativado em um ou mais perfis",
-    "Microsoft Defender não reporta antivírus ativo": "Proteção antivírus do Microsoft Defender não está ativa",
-    "Atualizações de software pendentes detectadas": "Há atualizações de software disponíveis",
-    "UAC desabilitado": "Controle de Conta de Usuário (UAC) está desativado",
-    "Coleta remota Windows não concluída": "Não foi possível verificar este computador Windows",
-    "Não foi possível verificar uma configuração Windows": "Uma verificação do Windows não pôde ser concluída",
-}
-
-CLIENT_SEVERITIES = {"Crítica": "Urgente", "Alta": "Alta", "Média": "Moderada",
-                     "Baixa": "Baixa", "Informativa": "Informativo"}
 
 def _e(value) -> str:
     return html.escape(str(value), quote=True)
@@ -68,6 +55,10 @@ def write_html(result: AuditResult, path: Path, profile: str = "analyst") -> Pat
             assets.append(f"<tr><td>{_e(device.ip)}</td><td>{_e(name)}</td><td>{_e(device.device_type)} ({device.device_type_confidence:.0%})</td><td>{_e(device.hostname)}</td><td>{_e(device.operating_system)}</td><td>{_e(mac)}</td><td>{_e(services)}</td><td>{_e(methods)}</td><td>{_e(device.presence_status)}</td></tr>")
 
     findings = sorted(_all_findings(result, profile), key=lambda pair: SEVERITY_ORDER.get(pair[1].severity, 99))
+    severity_counts = {severity: sum(finding.severity == severity for _, finding in findings)
+                       for severity in SEVERITY_ORDER}
+    severity_summary = " · ".join(f"{_e(severity)}: {count}" for severity, count in severity_counts.items() if count) or "Nenhum achado classificado"
+    affected_assets = sorted({target for target, _ in findings if target != "Notebook auditor"})
     finding_rows = []
     for target, finding in findings:
         if client_view:
@@ -76,15 +67,25 @@ def write_html(result: AuditResult, path: Path, profile: str = "analyst") -> Pat
             finding_rows.append(f"<tr><td>{_e(priority)}</td><td>{_e(target)}</td><td>{_e(title)}</td><td>{_e(finding.recommendation)}</td></tr>")
         elif profile == "developer":
             context = json.dumps(finding.context, ensure_ascii=False, sort_keys=True)
-            finding_rows.append(f"<tr><td>{_e(finding.severity)}</td><td>{finding.risk_score if finding.risk_score is not None else '—'}/100</td><td>{_e(target)}</td><td>{_e(finding.category)}</td><td>{_e(finding.title)}</td><td>{finding.confidence:.0%}</td><td>{_e(finding.evidence)}</td><td>{_e(finding.recommendation)}</td><td>{_e(context)}</td></tr>")
+            rule_label = f"{finding.rule_id or 'Regra não identificada'} · {finding.title}"
+            rationale_parts = []
+            if finding.justification:
+                rationale_parts.append(f"Regra: {finding.justification}")
+            if finding.risk_justification:
+                rationale_parts.append(f"Risco: {finding.risk_justification}")
+            rationale = f"<br><small>{_e(' '.join(rationale_parts))}</small>" if rationale_parts else ""
+            finding_rows.append(f"<tr><td>{_e(finding.severity)}</td><td>{finding.risk_score if finding.risk_score is not None else '—'}/100</td><td>{_e(target)}</td><td>{_e(finding.category)}</td><td>{_e(rule_label)}{rationale}</td><td>{finding.confidence:.0%}</td><td>{_e(finding.evidence)}</td><td>{_e(finding.recommendation)}</td><td>{_e(context)}</td></tr>")
         else:
-            finding_rows.append(f"<tr><td>{_e(finding.severity)}</td><td>{finding.risk_score if finding.risk_score is not None else '—'}/100</td><td>{_e(target)}</td><td>{_e(finding.title)}</td><td>{_e(finding.evidence)}</td><td>{_e(finding.recommendation)}</td></tr>")
+            rationale_values = [value for value in (finding.justification, finding.risk_justification) if value]
+            rationale = f" Justificativa: {' '.join(rationale_values)}" if rationale_values else ""
+            finding_rows.append(f"<tr><td>{_e(finding.severity)}</td><td>{finding.risk_score if finding.risk_score is not None else '—'}/100</td><td>{_e(target)}</td><td>{_e(finding.title)}</td><td>{_e(finding.evidence + rationale)}</td><td>{_e(finding.recommendation)}</td></tr>")
 
     evidence_rows = []
     if not client_view:
         for target, evidence in _evidence_rows(result, profile):
             if profile == "developer":
-                evidence_rows.append(f"<tr><td>{_e(target)}</td><td>{_e(evidence.kind)}</td><td>{_e(evidence.value)}</td><td>{_e(evidence.source)}</td><td>{evidence.confidence:.0%}</td><td>{_e(evidence.observed_at)}</td></tr>")
+                details = json.dumps(evidence.technical_details, ensure_ascii=False, sort_keys=True)
+                evidence_rows.append(f"<tr><td>{_e(target)}</td><td>{_e(evidence.host_ip or 'não atribuído')}</td><td>{_e(evidence.kind)}</td><td>{_e(evidence.value)}</td><td>{_e(evidence.source)}</td><td>{evidence.confidence:.0%}</td><td>{_e(evidence.observed_at)}</td><td>{_e(details)}</td></tr>")
             else:
                 evidence_rows.append(f"<tr><td>{_e(target)}</td><td>{_e(evidence.kind)}</td><td>{_e(evidence.value)}</td><td>{_e(evidence.source)}</td><td>{evidence.confidence:.0%}</td></tr>")
 
@@ -98,13 +99,13 @@ def write_html(result: AuditResult, path: Path, profile: str = "analyst") -> Pat
         summary_stats = f"Equipamentos encontrados: <strong>{len(report_devices)}</strong> · Pontos para revisão: <strong>{len(findings)}</strong>"
         summary_heading = "Visão geral"
     else:
-        summary_stats = f"Endereços verificados: <strong>{result.addresses_scanned}</strong> · Dispositivos observados: <strong>{len(result.devices)}</strong> · Achados neste perfil: <strong>{len(findings)}</strong>"
+        summary_stats = f"Endereços verificados: <strong>{result.addresses_scanned}</strong> · Dispositivos observados: <strong>{len(result.devices)}</strong> · Ativos afetados: <strong>{len(affected_assets)}</strong> · Achados neste perfil: <strong>{len(findings)}</strong>"
         summary_heading = "Resumo"
         asset_header = "<th>IP</th><th>Nome</th><th>Tipo provável</th><th>Hostname</th><th>SO estimado</th><th>MAC · fabricante</th><th>Serviços TCP</th><th>Métodos de descoberta</th><th>Presença</th>"
         if profile == "developer":
             findings_header = "<th>Severidade</th><th>Score</th><th>Ativo</th><th>Categoria</th><th>Regra</th><th>Confiança</th><th>Evidência</th><th>Recomendação</th><th>Contexto do risco</th>"
-            evidence_header = "<th>Ativo</th><th>Tipo</th><th>Valor</th><th>Origem</th><th>Confiança</th><th>Data observada</th>"
-            evidence_section = f"<h2>Evidências completas</h2><table><thead><tr>{evidence_header}</tr></thead><tbody>{''.join(evidence_rows) or '<tr><td colspan=\"6\">Sem evidências.</td></tr>'}</tbody></table>"
+            evidence_header = "<th>Ativo</th><th>IP de origem</th><th>Tipo</th><th>Valor</th><th>Origem</th><th>Confiança</th><th>Data observada</th><th>Detalhes técnicos</th>"
+            evidence_section = f"<h2>Evidências completas</h2><table><thead><tr>{evidence_header}</tr></thead><tbody>{''.join(evidence_rows) or '<tr><td colspan=\"8\">Sem evidências.</td></tr>'}</tbody></table>"
             colspan = 9
         else:
             findings_header = "<th>Severidade</th><th>Score</th><th>Ativo</th><th>Resultado</th><th>Evidência</th><th>Recomendação</th>"
@@ -131,10 +132,12 @@ def write_html(result: AuditResult, path: Path, profile: str = "analyst") -> Pat
         "Equipamentos que não responderam podem não aparecer neste resumo.",
         "Os pontos identificados são recomendações para revisão pelo responsável técnico.",
     ]
-    document = f'''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{_e(PROFILE_TITLES[profile])} · Berga CyberSec</title>
+    executive = (f"<p>Achados por severidade: {severity_summary}</p>"
+                 f"<p>Máquinas afetadas: {_e(', '.join(affected_assets) or 'Nenhuma')}</p>")
+    document = f'''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>{_e(PROFILE_TITLES[profile])} · Berga CyberSec</title>
 <style>body{{font:14px/1.5 Arial,sans-serif;color:#152334;margin:30px auto;max-width:1400px;padding:0 20px}}header{{background:#10243a;color:white;padding:26px;border-radius:10px}}h1{{margin:4px 0}}h2{{margin-top:28px;border-bottom:2px solid #16a085;padding-bottom:6px}}table{{border-collapse:collapse;width:100%;margin:12px 0 24px}}th,td{{border:1px solid #d7dee5;padding:8px;text-align:left;vertical-align:top}}th{{background:#eef3f7}}.muted{{color:#536779}}.badge{{font-weight:bold}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f5f8;padding:12px;font-size:11px}}@media print{{body{{margin:0;max-width:none}}header{{print-color-adjust:exact;-webkit-print-color-adjust:exact}}tr{{break-inside:avoid}}}}</style></head><body>
-<header><div>BERGA CYBERSEC · AUDITORIA AUTORIZADA</div><h1>{_e(PROFILE_TITLES[profile])}</h1><p>Escopo: {_e(result.scope)}</p><p>Início: {_e(result.started_at)} · Conclusão: {_e(result.completed_at or 'Em andamento')} · Gerado: {_e(generated)}</p></header>
-<h2>{summary_heading}</h2><p>{summary_stats}</p>{details}<p class="muted">{_e(caveat)}</p>
+<header><div>BERGA CYBERSEC · AUDITORIA AUTORIZADA</div><h1>{_e(PROFILE_TITLES[profile])}</h1><p>Auditoria: {_e(result.audit_id)} · Escopo: {_e(result.scope)}</p><p>Início: {_e(result.started_at)} · Conclusão: {_e(result.completed_at or 'Em andamento')} · Gerado: {_e(generated)}</p></header>
+<h2>{summary_heading}</h2><p>{summary_stats}</p>{executive}{details}<p class="muted">{_e(caveat)}</p>
 <h2>Inventário de ativos</h2><table><thead><tr>{asset_header}</tr></thead><tbody>{''.join(assets) or f'<tr><td colspan="{3 if client_view else 9}">Nenhum dispositivo foi identificado pelos métodos de descoberta configurados.</td></tr>'}</tbody></table>
 {evidence_section}<h2>Achados e recomendações</h2><table><thead><tr>{findings_header}</tr></thead><tbody>{''.join(finding_rows) or f'<tr><td colspan="{colspan}">Nenhum achado foi classificado.</td></tr>'}</tbody></table>
 <h2>Limitações</h2><ul>{''.join(f'<li>{_e(note)}</li>' for note in notes)}</ul><p class="muted">Documento confidencial · Berga CyberSec · Somente leitura</p></body></html>'''
@@ -163,10 +166,20 @@ def write_pdf(result: AuditResult, path: Path, profile: str = "analyst") -> Path
     active_count = sum(device.is_active for device in result.devices)
     asset_summary = (f"Hosts ativos confirmados: {active_count}" if client_view else
                      f"Hosts ativos confirmados: {active_count} · Entradas não confirmadas: {len(result.devices) - active_count}")
+    affected_summary = ", ".join(sorted({target for target, _ in findings
+                                           if target != "Notebook auditor"})) or "Nenhum"
     story = [Paragraph(f"BERGA CYBERSEC · {_e(PROFILE_TITLES[profile]).upper()}", styles["Brand"]),
+             Paragraph(f"ID da auditoria: {_e(result.audit_id)}", styles["BodyText"]),
              Paragraph(f"Escopo: {_e(result.scope)}", styles["Heading2"]),
-             Paragraph(f"Início: {_e(result.started_at)} · Conclusão: {_e(result.completed_at or 'Em andamento')}", styles["BodyText"]),
+             Paragraph(f"Início: {_e(result.started_at)} · Conclusão: {_e(result.completed_at or 'Em andamento')} · "
+                       f"Gerado: {_e(datetime.now().astimezone().isoformat(timespec='seconds'))}", styles["BodyText"]),
              Spacer(1, 6), Paragraph(f"Endereços verificados: {result.addresses_scanned} · {asset_summary} · Achados: {len(findings)}", styles["BodyText"]),
+             Paragraph("Achados por severidade: " + _e(", ".join(
+                 f"{severity}: {sum(f.severity == severity for _, f in findings)}"
+                 for severity in SEVERITY_ORDER
+                 if any(f.severity == severity for _, f in findings)
+             ) or "Nenhum achado classificado"), styles["BodyText"]),
+             Paragraph("Ativos afetados: " + _e(affected_summary), styles["BodyText"]),
              Spacer(1, 8), Paragraph("Inventário de ativos", styles["Heading2"])]
     if client_view:
         headers = ["Endereço", "Dispositivo", "Tipo de equipamento"]
@@ -174,7 +187,7 @@ def write_pdf(result: AuditResult, path: Path, profile: str = "analyst") -> Path
         rows = [[device.ip, client_display_name(device), client_device_type(device)] for device in result.devices if device.is_active]
     else:
         headers = ["IP", "Nome", "Tipo", "Hostname", "MAC / fabricante", "SO estimado", "Serviços TCP"]
-        asset_widths = [22, 40, 38, 38, 48, 34, 58]
+        asset_widths = [19, 35, 34, 34, 45, 31, 67]
         rows = [[device.ip, client_display_name(device), f"{device.device_type} ({device.device_type_confidence:.0%})", device.hostname,
                  f"{device.mac_address} / {device.mac_vendor}", device.operating_system,
                  ", ".join(f"{port}/{device.services.get(port, 'TCP')}" for port in device.open_ports) or "—"] for device in result.devices]
@@ -192,7 +205,9 @@ def write_pdf(result: AuditResult, path: Path, profile: str = "analyst") -> Path
         headers = ["Severidade", "Risco", "Ativo", "Evidência observada", "Recomendação"]
         widths = [25, 20, 42, 82, 87]
         finding_rows = [[finding.severity, f"{finding.risk_score or 0}/100", target,
-                         f"{finding.title}. {finding.evidence}", finding.recommendation] for target, finding in findings]
+                         f"Regra: {finding.rule_id or 'não identificada'}. {finding.title}. {finding.evidence}. "
+                         f"Justificativa: {finding.justification} {finding.risk_justification}",
+                         finding.recommendation] for target, finding in findings]
     if not finding_rows:
         finding_rows = [["—", "—", "Nenhum achado classificado.", "—"]] if client_view else [["—", "—", "—", "Nenhum achado classificado.", "—"]]
     table_data = [[Paragraph(_e(value), cell) for value in row] for row in [headers] + finding_rows]
@@ -226,7 +241,8 @@ def write_inventory_csv(result: AuditResult, path: Path, profile: str = "develop
     path.parent.mkdir(parents=True, exist_ok=True)
     def safe_cell(value) -> str:
         text = str(value)
-        return "'" + text if text.startswith(("=", "+", "-", "@", "\t", "\r")) else text
+        first_value = text.lstrip(" \t\r\n")
+        return "'" + text if first_value.startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")) else text
     with path.open("w", newline="", encoding="utf-8-sig") as stream:
         writer = csv.writer(stream, delimiter=";")
         if profile == "client":
@@ -236,16 +252,19 @@ def write_inventory_csv(result: AuditResult, path: Path, profile: str = "develop
                     continue
                 writer.writerow([safe_cell(device.ip), safe_cell(client_display_name(device)), safe_cell(client_device_type(device))])
         else:
-            writer.writerow(["IP", "Hostname / identificação", "Hostname", "Tipo provável", "Confiança do tipo", "Sistema operacional estimado", "MAC", "Fabricante da interface", "Métodos de descoberta", "Presença", "Serviços TCP", "Achados"])
+            writer.writerow(["IP", "Hostname / identificação", "Hostname", "Tipo provável", "Confiança do tipo", "Sistema operacional estimado", "MAC", "Fabricante da interface", "Métodos de descoberta", "Presença", "Serviços TCP", "Coletado em", "Procedência por campo", "Achados"])
             for device in result.devices:
                 ports = ", ".join(f"{port}/{device.services.get(port, 'TCP')}" for port in device.open_ports)
                 findings_text = "; ".join(item.title for item in device.findings)
                 writer.writerow([safe_cell(device.ip), safe_cell(client_display_name(device)), safe_cell(device.hostname), safe_cell(device.device_type),
                     f"{device.device_type_confidence:.0%}", safe_cell(device.operating_system), safe_cell(device.mac_address), safe_cell(device.mac_vendor),
-                    safe_cell(", ".join(device.discovered_by)), safe_cell(device.presence_status), safe_cell(ports), safe_cell(findings_text)])
+                    safe_cell(", ".join(device.discovered_by)), safe_cell(device.presence_status), safe_cell(ports),
+                    safe_cell(device.collected_at), safe_cell(json.dumps(device.attribute_provenance, ensure_ascii=False, sort_keys=True)),
+                    safe_cell(findings_text)])
     return path
 
 def write_audit_json(result: AuditResult, path: Path) -> Path:
+    """Write a UTF-8 JSON snapshot suitable for local audit history."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return path

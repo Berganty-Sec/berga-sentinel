@@ -1,0 +1,26 @@
+[scan]
+connect_timeout_seconds = 0.5
+icmp_timeout_seconds = 1.0
+dns_timeout_seconds = 1.0
+fingerprint_timeout_seconds = 1.2
+max_hosts = 256
+host_workers = 32
+tcp_workers = 192
+tcp_workers_per_host = 6
+icmp_workers = 32
+dns_workers = 32
+arp_workers = 64
+fingerprint_workers = 24
+ports = [20, 21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 515, 554, 631, 1433, 3306, 3389, 5432, 5555, 5900, 5985, 5986, 5357, 8000, 8080, 8443, 9100]
+
+[rules]
+severity_thresholds = [80, 60, 40, 20]
+# Leave empty to run all built-in rules, or list permitted rule identifiers.
+enabled_rule_ids = []
+
+[reports]
+formats = ["html", "pdf", "json", "csv"]
+profiles = ["developer", "analyst", "client"]
+
+[logging]
+level = "INFO"

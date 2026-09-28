@@ -14,12 +14,15 @@ Berga Sentinel is a Python desktop tool for **authorized network inventory and s
 - Findings with evidence, remediation recommendations, and heuristic prioritization based on confidence and context.
 - Technical, operational, and client-friendly HTML/PDF reports, plus CSV inventories and complete JSON data.
 - Technical logs and a readable audit summary.
+- Bounded host/TCP/ICMP/DNS/ARP/fingerprint concurrency, configurable timeouts, and cooperative cancellation.
+- Collection timestamps and per-field provenance in the inventory, plus a local audit history and comparison report.
 
 ## Requirements
 
 - Windows 10/11 for the desktop interface and Windows posture checks.
 - Python 3.10 or later.
 - `reportlab` is installed as a package dependency for PDF export.
+- Python 3.10 uses `tomli` for optional TOML configuration; newer versions use the standard library parser.
 
 ## Installation and usage
 
@@ -30,10 +33,13 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e .
+Copy-Item .\berga-sentinel.toml.example .\berga-sentinel.toml
 python -m berga_sentinel
 ```
 
 In the interface, enter the authorized IPv4 CIDR and confirm authorization before starting. Each audit is currently limited to 256 addresses.
+
+The optional `berga-sentinel.toml` is read from the current working directory and is ignored by Git. Without it, validated built-in defaults apply. The example file lists timeouts, host and worker limits, TCP ports, risk thresholds, report formats/profiles, and log level. Unknown configuration keys are rejected.
 
 ## Audit output
 
@@ -49,8 +55,11 @@ Each run creates a dedicated directory under `output/<audit-id>/`. All files for
 | `auditoria-completa.json` | Complete run data, including raw technical observations; confidential internal artifact |
 | `auditoria-<id>-tecnico.log` | Technical execution log |
 | `auditoria-<id>-cliente.log` | Readable audit summary |
+| `comparacao-anterior.html` | New, resolved, and persistent findings plus inventory changes, when a previous snapshot exists |
 
 Audit files may contain client network addresses and system details. Store and share them according to the confidentiality and retention terms agreed with the client. For client presentation, share only `relatorio-cliente.html` or `relatorio-cliente.pdf` and, if needed, `inventario-cliente.csv`. The complete JSON and technical logs are internal audit artifacts.
+
+Audit snapshots are kept together in `output/history/` (up to 500 records). The technical inventory export includes collection time and per-field provenance. Client reports omit raw scanner notes and technical evidence details.
 
 ## Architecture
 
@@ -63,6 +72,7 @@ The workflow is modular: **Scanner → Inventory → Evidence → Rules → Risk
 - `rules` and `risk`: evidence interpretation and contextual prioritization.
 - `reporting`, `client_log`, and `output_layout`: reports and per-audit artifacts.
 - `pipeline` and `ui`: workflow orchestration and desktop interface.
+- `config`: validated centralized settings; `rule_engine` and `rules`: independent evidence rule registry; `presentation`: shared client-safe wording; `history` and `comparison`: snapshots and audit comparisons.
 
 Collectors should produce evidence; independent rules interpret that evidence. The application should not perform automatic remediation.
 
@@ -82,6 +92,19 @@ Firewall, Microsoft Defender, Windows Update, and UAC are checked only on the Wi
 - Windows configuration checks do not cover remote computers in this version.
 
 ## Development and live integration test
+
+Run the offline unit and mocked integration suite from the repository root:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+These tests do not require or access a real network. To audit the installed dependency tree, install the development tools and run `pip-audit`:
+
+```powershell
+python -m pip install -e ".[dev]"
+pip-audit
+```
 
 The integration test performs a real network scan and **must only be run on an explicitly authorized scope**. Set the authorized CIDR and a list of IP addresses that you have confirmed are active. The test checks coverage of the range and probe catalog, compares known active targets with the inventory, and generates reports from the collected data. No target is hard-coded in the repository.
 

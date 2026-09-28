@@ -6,12 +6,13 @@ import socket
 import ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from .config import DEFAULT_CONFIG
 from .models import Device, Evidence
 from .service_catalog import HTTP_PORTS, HTTPS_PORTS
 
 LOG = logging.getLogger(__name__)
-MAX_FINGERPRINT_WORKERS = 24
-FINGERPRINT_TIMEOUT = 1.2
+MAX_FINGERPRINT_WORKERS = DEFAULT_CONFIG.scan.fingerprint_workers
+FINGERPRINT_TIMEOUT = DEFAULT_CONFIG.scan.fingerprint_timeout_seconds
 MAX_RESPONSE_BYTES = 4096
 
 def _printable(data: bytes) -> str:
@@ -19,11 +20,11 @@ def _printable(data: bytes) -> str:
     text = "".join(character if character.isprintable() or character in "\r\n\t" else " " for character in text)
     return text.strip()[:512]
 
-def _read_banner(device: Device, port: int) -> list[Evidence]:
+def _read_banner(device: Device, port: int, timeout: float = FINGERPRINT_TIMEOUT) -> list[Evidence]:
     results: list[Evidence] = []
     try:
-        with socket.create_connection((device.ip, port), timeout=FINGERPRINT_TIMEOUT) as connection:
-            connection.settimeout(FINGERPRINT_TIMEOUT)
+        with socket.create_connection((device.ip, port), timeout=timeout) as connection:
+            connection.settimeout(timeout)
             if port == 23:
                 connection.sendall(b"\r\n")
             if port == 21:
@@ -63,12 +64,13 @@ def _read_banner(device: Device, port: int) -> list[Evidence]:
         LOG.debug("Fingerprint de banner indisponível para %s:%d: %s", device.ip, port, exc)
     return results
 
-def _http_head(device: Device, port: int, use_tls: bool) -> list[Evidence]:
+def _http_head(device: Device, port: int, use_tls: bool,
+               timeout: float = FINGERPRINT_TIMEOUT) -> list[Evidence]:
     results: list[Evidence] = []
     raw_socket = None
     try:
-        raw_socket = socket.create_connection((device.ip, port), timeout=FINGERPRINT_TIMEOUT)
-        raw_socket.settimeout(FINGERPRINT_TIMEOUT)
+        raw_socket = socket.create_connection((device.ip, port), timeout=timeout)
+        raw_socket.settimeout(timeout)
         connection = raw_socket
         if use_tls:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -97,7 +99,8 @@ def _http_head(device: Device, port: int, use_tls: bool) -> list[Evidence]:
                 pass
     return results
 
-def _probe_legacy_tls(device: Device, port: int, version: ssl.TLSVersion) -> Evidence | None:
+def _probe_legacy_tls(device: Device, port: int, version: ssl.TLSVersion,
+                      timeout: float = FINGERPRINT_TIMEOUT) -> Evidence | None:
     """Tests whether a TLS endpoint accepts a legacy protocol; no credentials are sent."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
@@ -106,8 +109,8 @@ def _probe_legacy_tls(device: Device, port: int, version: ssl.TLSVersion) -> Evi
         context.minimum_version = version
         context.maximum_version = version
         context.set_ciphers("DEFAULT:@SECLEVEL=0")
-        with socket.create_connection((device.ip, port), timeout=FINGERPRINT_TIMEOUT) as raw:
-            raw.settimeout(FINGERPRINT_TIMEOUT)
+        with socket.create_connection((device.ip, port), timeout=timeout) as raw:
+            raw.settimeout(timeout)
             with context.wrap_socket(raw, server_hostname=device.ip) as secured:
                 negotiated = secured.version() or version.name
                 return Evidence("tls.legacy_version", negotiated,
@@ -115,7 +118,7 @@ def _probe_legacy_tls(device: Device, port: int, version: ssl.TLSVersion) -> Evi
     except (OSError, ssl.SSLError, ValueError, TimeoutError):
         return None
 
-def _probe_smb1(device: Device) -> list[Evidence]:
+def _probe_smb1(device: Device, timeout: float = FINGERPRINT_TIMEOUT) -> list[Evidence]:
     """Envia apenas uma negociação SMB sem autenticação, sem acesso a arquivos."""
     dialect = b"\x02NT LM 0.12\x00"
     smb_header = struct.pack("<4sBIBHH8sHHHHH", b"\xffSMB", 0x72, 0, 0x18, 0xC853,
@@ -124,8 +127,8 @@ def _probe_smb1(device: Device) -> list[Evidence]:
     payload = smb_header + body
     packet = b"\x00" + len(payload).to_bytes(3, "big") + payload
     try:
-        with socket.create_connection((device.ip, 445), timeout=FINGERPRINT_TIMEOUT) as connection:
-            connection.settimeout(FINGERPRINT_TIMEOUT)
+        with socket.create_connection((device.ip, 445), timeout=timeout) as connection:
+            connection.settimeout(timeout)
             connection.sendall(packet)
             netbios = connection.recv(4)
             if len(netbios) != 4:
@@ -150,33 +153,43 @@ def _probe_smb1(device: Device) -> list[Evidence]:
         return [Evidence("smb.smb1_probe", f"Negociação SMB1 não conclusiva: {type(exc).__name__}.",
                          "Negociação SMB sem autenticação", confidence=0.35)]
 
-def _probe_one(device: Device, port: int) -> list[Evidence]:
+def _probe_one(device: Device, port: int, timeout: float = FINGERPRINT_TIMEOUT) -> list[Evidence]:
     if port in HTTP_PORTS:
-        return _http_head(device, port, False)
+        return _http_head(device, port, False, timeout)
     if port in HTTPS_PORTS:
-        results = _http_head(device, port, True)
+        results = _http_head(device, port, True, timeout)
         for version in (ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1):
-            evidence = _probe_legacy_tls(device, port, version)
+            evidence = _probe_legacy_tls(device, port, version, timeout)
             if evidence:
                 results.append(evidence)
         return results
     if port == 445:
-        return _probe_smb1(device)
+        return _probe_smb1(device, timeout)
     if port in {21, 22, 23, 25, 110, 143}:
-        return _read_banner(device, port)
+        return _read_banner(device, port, timeout)
     return []
 
-def collect_service_fingerprints(devices: list[Device]) -> None:
+def collect_service_fingerprints(devices: list[Device], max_workers: int = MAX_FINGERPRINT_WORKERS,
+                                 timeout: float = FINGERPRINT_TIMEOUT) -> None:
     jobs = [(device, port) for device in devices for port in device.open_ports
             if port in HTTP_PORTS | HTTPS_PORTS | {21, 22, 23, 25, 110, 143, 445}]
     LOG.info("Coletando fingerprints não autenticados para %d serviço(s)", len(jobs))
     if not jobs:
         return
-    with ThreadPoolExecutor(max_workers=min(MAX_FINGERPRINT_WORKERS, len(jobs))) as pool:
-        futures = {pool.submit(_probe_one, device, port): (device, port) for device, port in jobs}
-        for future in as_completed(futures):
-            device, port = futures[future]
-            try:
-                device.evidence.extend(future.result())
-            except Exception:
-                LOG.exception("Falha ao obter fingerprint de %s:%d", device.ip, port)
+    workers = max(1, min(max_workers, len(jobs)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sentinel-fingerprint") as pool:
+        # Submit bounded batches so a large inventory cannot leave every probe
+        # job queued in the executor at once.
+        for offset in range(0, len(jobs), workers * 2):
+            batch = jobs[offset:offset + workers * 2]
+            futures = {pool.submit(_probe_one, device, port, timeout): (device, port)
+                       for device, port in batch}
+            for future in as_completed(futures):
+                device, port = futures[future]
+                try:
+                    findings = future.result()
+                    for evidence in findings:
+                        evidence.host_ip = device.ip
+                    device.evidence.extend(findings)
+                except Exception:
+                    LOG.exception("Falha ao obter fingerprint de %s:%d", device.ip, port)

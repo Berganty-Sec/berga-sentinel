@@ -17,6 +17,10 @@ class Finding:
     risk_score: int | None = None
     confidence: float = 0.6
     context: dict[str, str | int | float | bool] = field(default_factory=dict)
+    rule_id: str = ""
+    justification: str = ""
+    risk_justification: str = ""
+    base_risk_score: int | None = None
 
 @dataclass
 class Evidence:
@@ -26,6 +30,8 @@ class Evidence:
     source: str
     observed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     confidence: float = 0.8
+    host_ip: str = ""
+    technical_details: dict[str, str | int | float | bool] = field(default_factory=dict)
 
 @dataclass
 class Device:
@@ -46,6 +52,8 @@ class Device:
     services: dict[int, str] = field(default_factory=dict)
     evidence: list[Evidence] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    collected_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    attribute_provenance: dict[str, dict[str, str | float]] = field(default_factory=dict)
 
 @dataclass
 class AuditResult:
@@ -66,6 +74,7 @@ class AuditResult:
     discovery_timeout_counts: dict[str, int] = field(default_factory=dict)
     discovery_errors: list[str] = field(default_factory=list)
     raw_scan: list[dict[str, Any]] = field(default_factory=list)
+    cancelled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -102,3 +111,4 @@ class ScanSnapshot:
     method_counts: dict[str, int] = field(default_factory=dict)
     timeout_counts: dict[str, int] = field(default_factory=dict)
     discovery_errors: list[str] = field(default_factory=list)
+    cancelled: bool = False

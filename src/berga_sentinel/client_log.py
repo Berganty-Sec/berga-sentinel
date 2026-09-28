@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .models import AuditResult, SEVERITY_ORDER
 from .fingerprints import client_device_type, client_display_name
+from .presentation import client_finding_title, client_severity
 
 def client_log_path(output_dir: Path, audit_id: str) -> Path:
     return output_dir / f"auditoria-{audit_id}-cliente.log"
@@ -29,17 +30,8 @@ def write_client_summary(result: AuditResult, path: Path) -> None:
     if not findings:
         append_client_log(path, "Nenhum ponto de atenção foi identificado nas verificações realizadas.")
     for target, finding in findings:
-        priority = {"Crítica": "Urgente", "Média": "Moderada", "Informativa": "Informativo"}.get(finding.severity, finding.severity)
-        title = {
-            "Protocolo Telnet confirmado e acessível": "Acesso remoto usa Telnet, sem criptografia",
-            "Servidor SMBv1 aceitou negociação": "Compartilhamento aceita um protocolo antigo",
-            "Firewall do Windows desabilitado em perfis": "Firewall do Windows está desativado em um ou mais perfis",
-            "Microsoft Defender não reporta antivírus ativo": "Proteção antivírus do Microsoft Defender não está ativa",
-            "Atualizações de software pendentes detectadas": "Há atualizações de software disponíveis",
-            "UAC desabilitado": "Controle de Conta de Usuário (UAC) está desativado",
-            "Coleta remota Windows não concluída": "Não foi possível verificar este computador Windows",
-            "Não foi possível verificar uma configuração Windows": "Uma verificação do Windows não pôde ser concluída",
-        }.get(finding.title, finding.title)
+        priority = client_severity(finding.severity)
+        title = client_finding_title(finding.title)
         append_client_log(path, f"[{priority}] {target} | {title}")
         append_client_log(path, f"Próximo passo recomendado: {finding.recommendation}")
     append_client_log(path, "Equipamentos que não responderam podem não aparecer no inventário.")
