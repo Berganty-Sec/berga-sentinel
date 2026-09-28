@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "berga-sentinel"
+version = "0.1.0"
+description = "Ferramenta autorizada de auditoria de segurança de rede da Berga CyberSec"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["reportlab>=4.0"]
+
+[project.scripts]
+berga-sentinel = "berga_sentinel.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+berga_sentinel = ["data/*.csv"]
